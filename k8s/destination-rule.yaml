@@ -1,0 +1,16 @@
+# Istio DestinationRule configuration for the user service
+# This defines policies that apply to traffic after routing has occurred
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  # Name of the destination rule resource
+  name: user-service
+spec:
+  # The Kubernetes service name this rule applies to
+  host: user-service
+  # Define subsets of the service for traffic splitting
+  subsets:
+  - name: v1           # Name of the subset, referenced in VirtualService
+    labels:
+      version: v1      # Pod labels to match for this subset
+                      # Used for version-based routing and canary deployments 

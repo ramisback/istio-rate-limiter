@@ -1,0 +1,20 @@
+# Kubernetes Service configuration for the user service
+# This defines how the service is exposed within the cluster
+apiVersion: v1
+kind: Service
+metadata:
+  # Name of the Kubernetes service
+  name: user-service
+spec:
+  # Pod selector to determine which pods belong to this service
+  selector:
+    app: user-service  # Matches pods with label app=user-service
+  # Port configuration for the service
+  ports:
+  - port: 80          # Port exposed by the service
+    targetPort: 8080  # Port the container is listening on
+    protocol: TCP     # Protocol to use
+    name: http        # Name of the port (used for service discovery)
+  # Service type determines how the service is exposed
+  type: LoadBalancer  # Exposes the service externally using cloud provider's load balancer
+                      # Alternative types: ClusterIP (default), NodePort, ExternalName 

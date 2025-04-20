@@ -1,0 +1,20 @@
+# Istio Gateway configuration for the user service
+# This defines the entry point for external traffic into the service mesh
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  # Name of the gateway resource
+  name: user-service-gateway
+spec:
+  # Selector to match the Istio ingress gateway pod
+  selector:
+    istio: ingressgateway
+  # Server configuration for the gateway
+  servers:
+  - port:
+      number: 80      # Port number for HTTP traffic
+      name: http      # Name of the port
+      protocol: HTTP  # Protocol to use (HTTP/HTTPS)
+    hosts:
+    - "*"            # Allow traffic from any host
+                     # In production, this should be restricted to specific domains 

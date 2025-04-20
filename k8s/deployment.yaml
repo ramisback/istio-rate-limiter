@@ -1,0 +1,58 @@
+# Kubernetes Deployment configuration for the user service
+# This defines how the application pods are deployed and managed
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # Name of the deployment
+  name: user-service
+  # Labels for the deployment resource
+  labels:
+    app: user-service
+spec:
+  # Number of pod replicas to maintain
+  replicas: 2
+  # Pod selector to identify which pods belong to this deployment
+  selector:
+    matchLabels:
+      app: user-service
+  # Pod template specification
+  template:
+    metadata:
+      # Labels for the pods
+      labels:
+        app: user-service
+        version: v1      # Version label for subset selection in DestinationRule
+      # Annotations for pod configuration
+      annotations:
+        sidecar.istio.io/inject: "true"  # Enable Istio sidecar injection
+    spec:
+      # Container specifications
+      containers:
+      - name: user-service
+        image: user-service:v1
+        imagePullPolicy: Never  # Use local image, don't pull from registry
+        # Container port configuration
+        ports:
+        - containerPort: 8080   # Port the application listens on
+        # Resource requirements and limits
+        resources:
+          requests:             # Minimum resources required
+            cpu: "50m"          # 50 millicores (0.05 CPU)
+            memory: "64Mi"      # 64 megabytes of memory
+          limits:               # Maximum resources allowed
+            cpu: "100m"         # 100 millicores (0.1 CPU)
+            memory: "128Mi"     # 128 megabytes of memory
+        # Readiness probe configuration
+        readinessProbe:
+          httpGet:
+            path: /health       # Health check endpoint
+            port: 8080          # Port to check
+          initialDelaySeconds: 5   # Wait 5s before first check
+          periodSeconds: 10        # Check every 10s
+        # Liveness probe configuration
+        livenessProbe:
+          httpGet:
+            path: /health       # Health check endpoint
+            port: 8080          # Port to check
+          initialDelaySeconds: 15  # Wait 15s before first check
+          periodSeconds: 20        # Check every 20s 

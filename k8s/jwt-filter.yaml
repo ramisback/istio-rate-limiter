@@ -1,0 +1,71 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: jwt-to-metadata
+  namespace: default
+spec:
+  workloadSelector:
+    labels:
+      app: user-service
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "envoy.filters.http.jwt_authn"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.jwt_authn
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+            providers:
+              jwt-provider:
+                issuer: "issuer.example.com"
+                from_headers:
+                  - name: "Authorization"
+                    value_prefix: "Bearer "
+                remote_jwks:
+                  http_uri:
+                    uri: "https://issuer.example.com/.well-known/jwks.json"
+                    cluster: outbound|80||issuer.example.com
+                    timeout: 5s
+                forward: true
+                payload_in_metadata: "jwt_payload"
+                forward_payload_header: "x-jwt-payload"
+            rules:
+              - match:
+                  prefix: "/"
+                requires:
+                  provider_name: "jwt-provider"
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "envoy.filters.http.router"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.lua
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            inline_code: |
+              function envoy_on_request(request_handle)
+                local metadata = request_handle:metadata()
+                local jwt_payload = metadata:get("jwt_payload")
+                if jwt_payload ~= nil then
+                  -- Assuming company ID is in company_id field of the JWT payload
+                  local company_id = jwt_payload["company_id"] 
+                  if company_id ~= nil then
+                    request_handle:headers():add("x-company-id", company_id)
+                  end
+                end
+              end 

@@ -1,0 +1,22 @@
+# Istio VirtualService configuration for the user service
+# This defines how traffic is routed within the service mesh
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  # Name of the virtual service resource
+  name: user-service
+spec:
+  # Hosts that this virtual service applies to
+  hosts:
+  - "*"              # Match all hosts
+  # Gateways that this virtual service is bound to
+  gateways:
+  - user-service-gateway  # Reference to the gateway defined earlier
+  # HTTP routing rules
+  http:
+  - route:
+    - destination:
+        host: user-service  # Kubernetes service name to route to
+        subset: v1         # Subset defined in DestinationRule for versioning
+      weight: 100          # Traffic weight (100% to this destination)
+                          # Useful for canary deployments or A/B testing 
