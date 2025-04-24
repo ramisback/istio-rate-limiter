@@ -182,9 +182,9 @@ graph TD
     A[Load Generator] -->|HTTP Requests| B[Istio Gateway]
     A -->|Metrics| C[Prometheus]
     C -->|Visualization| D[Grafana]
-    B -->|Rate Limited| E[User Service]
-    E -->|Check Limits| F[Rate Limit Service]
+    B -->|Rate Limit Check| F[Rate Limit Service]
     F -->|Store State| G[Redis Cluster]
+    B -->|Forward if Allowed| E[User Service]
 ```
 
 ## Test Configuration

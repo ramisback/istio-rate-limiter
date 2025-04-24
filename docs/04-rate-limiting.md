@@ -9,24 +9,31 @@ This document describes the rate limiting implementation in the Istio Rate Limit
 ### High-Level Flow
 ```
 ┌───────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│ Client        │────►│ JWT Extraction   │────►│ Rate Limit      │
-│ Request       │     │ & Validation     │     │ Check           │
+│ Client        │────►│ Istio Gateway    │────►│ Rate Limit      │
+│ Request       │     │                  │     │ Filter          │
 └───────────────┘     └──────────────────┘     └─────────────────┘
                                                        │
                                                        ▼
 ┌───────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│ Redis         │◄────│ Rate State       │◄────│ Decision        │
-│ Storage       │────►│ Update           │────►│ Making          │
+│ Redis         │◄────│ Rate Limit       │◄────│ Rate Limit      │
+│ Storage       │     │ Service          │     │ Decision        │
+└───────────────┘     └──────────────────┘     └─────────────────┘
+                                                       │
+                                                       ▼
+┌───────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│ User          │◄────│ JWT              │◄────│ Forward         │
+│ Service       │     │ Filter           │     │ Request         │
 └───────────────┘     └──────────────────┘     └─────────────────┘
 ```
 
 ### Request Processing Flow
-1. Client sends request to service
-2. Envoy proxy intercepts request
-3. JWT token is validated and extracted
-4. Rate limit service checks limits
-5. Request is allowed or rejected
-6. Counters are updated in Redis
+1. Client sends request to Istio Gateway
+2. Rate Limit Filter intercepts request
+3. Rate Limit Service checks limits against Redis
+4. If allowed, request proceeds to JWT Filter
+5. JWT Filter validates token
+6. Request reaches User Service
+7. Counters are updated in Redis
 
 ## Rate Limiting Types
 

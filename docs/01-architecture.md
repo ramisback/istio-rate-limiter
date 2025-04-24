@@ -35,12 +35,12 @@ The Istio Rate Limiter Demo consists of the following key components:
 
 1. **Request Flow**
    ```
-   Client -> Istio Gateway -> Rate Limit Filter -> JWT Filter -> User Service
+   Client -> Istio Gateway -> Rate Limit Filter -> Rate Limit Service -> JWT Filter -> User Service
    ```
 
 2. **Rate Limiting Flow**
    ```
-   Request -> Rate Limit Filter -> Rate Limit Service -> Redis -> Response
+   Request -> Rate Limit Filter -> Rate Limit Service -> Redis -> Response (Allow/Deny)
    ```
 
 3. **Authentication Flow**
@@ -183,6 +183,8 @@ graph TB
 graph LR
     subgraph "Istio Components"
         Gateway[Gateway]
+        RateLimit[Rate Limit Filter]
+        JWT[JWT Filter]
         VS[Virtual Service]
         DR[Destination Rules]
         Auth[Authorization Policy]
@@ -190,6 +192,8 @@ graph LR
     end
 
     subgraph "Configuration"
+        RateLimit -->|Applied at| Gateway
+        JWT -->|Applied at| Gateway
         VS -->|Routes| Gateway
         DR -->|Traffic Policy| Gateway
         Auth -->|Security| Gateway
@@ -199,6 +203,8 @@ graph LR
 
 #### Key Components:
 - **Istio Gateway**: Entry point for external traffic
+- **Rate Limit Filter**: Enforces rate limits at the gateway level
+- **JWT Filter**: Validates JWT tokens at the gateway level
 - **Virtual Service**: Traffic routing rules
 - **Destination Rules**: Traffic policies
 - **Authorization Policy**: Security rules
@@ -244,16 +250,20 @@ graph TD
 sequenceDiagram
     participant Client
     participant Gateway
-    participant UserService
+    participant RateLimitFilter
     participant RateLimitService
+    participant UserService
     participant Redis
 
     Client->>Gateway: HTTP Request
-    Gateway->>UserService: Forward Request
-    UserService->>RateLimitService: Check Rate Limit
+    Gateway->>RateLimitFilter: Forward Request
+    RateLimitFilter->>RateLimitService: Check Rate Limit
     RateLimitService->>Redis: Get Current Count
     Redis-->>RateLimitService: Return Count
-    RateLimitService-->>UserService: Allow/Deny
+    RateLimitService-->>RateLimitFilter: Allow/Deny
+    RateLimitFilter->>UserService: Forward if Allowed
+    UserService->>Redis: Get User Data
+    Redis-->>UserService: Return Data
     UserService-->>Client: Response
 ```
 
@@ -303,15 +313,14 @@ spec:
 #### Rate Limit Algorithm
 ```mermaid
 graph TD
-    A[Request] --> B{Check JWT}
-    B -->|Valid| C[Extract Company ID]
-    B -->|Invalid| D[Use IP]
-    C --> E[Check Redis]
-    D --> E
-    E -->|Under Limit| F[Allow]
-    E -->|Over Limit| G[Deny]
-    F --> H[Increment Counter]
-    G --> I[Return 429]
+    A[Request] --> B[Rate Limit Filter]
+    B --> C[Rate Limit Service]
+    C --> D[Check Redis]
+    D -->|Under Limit| E[Allow Request]
+    D -->|Over Limit| F[Return 429]
+    E --> G[JWT Filter]
+    G -->|Valid| H[User Service]
+    G -->|Invalid| I[Return 401]
 ```
 
 ### 3. Monitoring Architecture

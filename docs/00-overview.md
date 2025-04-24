@@ -22,9 +22,9 @@ This project demonstrates implementing rate limiting in a Kubernetes environment
 ```mermaid
 graph TD
     Client[Client] -->|HTTP Request| Gateway[Istio Gateway]
-    Gateway -->|Rate Limited| UserService[User Service]
-    UserService -->|Check Limits| RateLimitService[Rate Limit Service]
+    Gateway -->|Rate Limit Check| RateLimitService[Rate Limit Service]
     RateLimitService -->|Store State| Redis[Redis Cluster]
+    Gateway -->|Forward if Allowed| UserService[User Service]
     RateLimitService -->|Metrics| Prometheus[Prometheus]
     Prometheus -->|Visualization| Grafana[Grafana]
     
