@@ -144,6 +144,7 @@ graph TB
     subgraph "Kubernetes Cluster"
         subgraph "Istio Service Mesh"
             Gateway[Istio Gateway]
+            RLF[Rate Limit Filter]
             VS[Virtual Service]
             DR[Destination Rules]
         end
@@ -165,10 +166,11 @@ graph TB
     end
 
     Client --> Gateway
-    Gateway --> VS
-    VS --> US
-    US --> RLS
+    Gateway --> RLF
+    RLF --> RLS
     RLS --> Redis
+    RLF -->|If Allowed| VS
+    VS --> US
     RLS --> Prometheus
     Prometheus --> Grafana
     US --> Jaeger
