@@ -12,7 +12,7 @@ spec:
   # Port configuration for the service
   ports:
   - port: 80          # Port exposed by the service
-    targetPort: 8080  # Port the container is listening on
+    targetPort: 8083  # Port the container is listening on
     protocol: TCP     # Protocol to use
     name: http        # Name of the port (used for service discovery)
   # Service type determines how the service is exposed

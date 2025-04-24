@@ -33,7 +33,7 @@ spec:
         imagePullPolicy: Never  # Use local image, don't pull from registry
         # Container port configuration
         ports:
-        - containerPort: 8080   # Port the application listens on
+        - containerPort: 8083   # Port the application listens on
         # Resource requirements and limits
         resources:
           requests:             # Minimum resources required
@@ -45,14 +45,14 @@ spec:
         # Readiness probe configuration
         readinessProbe:
           httpGet:
-            path: /health       # Health check endpoint
-            port: 8080          # Port to check
+            path: /metrics      # Health check endpoint
+            port: 8083          # Port to check
           initialDelaySeconds: 5   # Wait 5s before first check
           periodSeconds: 10        # Check every 10s
         # Liveness probe configuration
         livenessProbe:
           httpGet:
-            path: /health       # Health check endpoint
-            port: 8080          # Port to check
+            path: /metrics      # Health check endpoint
+            port: 8083          # Port to check
           initialDelaySeconds: 15  # Wait 15s before first check
           periodSeconds: 20        # Check every 20s 

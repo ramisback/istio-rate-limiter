@@ -2,11 +2,178 @@
 
 ## Overview
 
-This guide covers load testing the rate-limited service using the provided load testing tools:
-- Test scenarios
-- Tool configuration
-- Results analysis
-- Performance tuning
+The load testing suite is designed to test the rate limiting functionality of the system under various conditions. It includes tools for generating traffic, collecting metrics, and analyzing results.
+
+## Prerequisites
+
+1. **Kubernetes Cluster**
+   - Istio installed and configured
+   - All services deployed
+   - Access to cluster configuration
+
+2. **Required Tools**
+   - `kubectl` configured
+   - Go 1.16 or later
+   - Access to cluster metrics
+
+## Running Load Tests
+
+### Using the Helper Script
+
+The easiest way to run load tests is using the provided helper script:
+
+```bash
+./run-loadtest.sh
+```
+
+This script will:
+1. Detect the external IP of the Istio ingress gateway
+2. Set up port forwarding if needed
+3. Build and run the load test
+4. Clean up resources when done
+
+### Manual Setup
+
+If you prefer to run tests manually:
+
+1. **Get the Gateway IP**
+   ```bash
+   kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+   ```
+
+2. **Set up Port Forwarding** (if needed)
+   ```bash
+   kubectl port-forward -n istio-system svc/istio-ingressgateway 8080:80
+   ```
+
+3. **Build and Run**
+   ```bash
+   cd loadtest
+   go build -o loadtest
+   ./loadtest -url "http://<GATEWAY_IP>" -rps 100 -duration 5m -concurrency 10
+   ```
+
+## Test Parameters
+
+The load test supports the following parameters:
+
+- `-url`: Target URL (default: http://localhost:8083)
+- `-rps`: Requests per second (default: 100)
+- `-duration`: Test duration (default: 5m)
+- `-concurrency`: Number of concurrent workers (default: 10)
+- `-metrics`: Enable Prometheus metrics (default: true)
+- `-metrics-port`: Metrics port (default: 9090)
+
+## Test Scenarios
+
+### 1. Basic Rate Limiting
+
+Tests the basic rate limiting functionality:
+```bash
+./loadtest -url "$EXTERNAL_IP" -rps 50 -duration 1m
+```
+
+### 2. Authentication Flow
+
+Tests authenticated endpoints with JWT tokens:
+```bash
+./loadtest -url "$EXTERNAL_IP" -rps 30 -duration 2m -auth
+```
+
+### 3. High Load
+
+Tests system behavior under high load:
+```bash
+./loadtest -url "$EXTERNAL_IP" -rps 200 -duration 3m -concurrency 20
+```
+
+### 4. Error Handling
+
+Tests error scenarios and recovery:
+```bash
+./loadtest -url "$EXTERNAL_IP" -rps 100 -duration 1m -error-rate 0.1
+```
+
+## Monitoring Tests
+
+### Prometheus Metrics
+
+The load test exposes Prometheus metrics at `:9090/metrics`:
+- Request rates
+- Response times
+- Error counts
+- Rate limit hits
+
+### Grafana Dashboard
+
+A pre-configured dashboard is available for visualizing test results:
+- Request rates over time
+- Response time percentiles
+- Error rates
+- Rate limit rejections
+
+## Analyzing Results
+
+### Key Metrics
+
+1. **Request Rates**
+   - Successful requests per second
+   - Failed requests per second
+   - Rate limit hits
+
+2. **Response Times**
+   - P50 latency
+   - P95 latency
+   - P99 latency
+
+3. **Error Rates**
+   - Rate limit rejections
+   - Authentication failures
+   - System errors
+
+### Performance Criteria
+
+The system should maintain:
+- Response time < 100ms (P95)
+- Error rate < 1%
+- Successful rate limit enforcement
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Gateway Not Accessible**
+   - Check Istio ingress gateway status
+   - Verify port forwarding
+   - Check network policies
+
+2. **High Error Rates**
+   - Check service logs
+   - Verify rate limit configuration
+   - Monitor resource usage
+
+3. **Metrics Not Available**
+   - Check Prometheus configuration
+   - Verify service mesh setup
+   - Check metric endpoints
+
+### Debugging Tools
+
+1. **Service Logs**
+   ```bash
+   kubectl logs -l app=user-service
+   kubectl logs -l app=ratelimit
+   ```
+
+2. **Metrics**
+   ```bash
+   kubectl port-forward svc/prometheus 9090:9090
+   ```
+
+3. **Configuration**
+   ```bash
+   kubectl get gateway,virtualservice,envoyfilter
+   ```
 
 ## Load Testing Architecture
 
@@ -18,83 +185,6 @@ graph TD
     B -->|Rate Limited| E[User Service]
     E -->|Check Limits| F[Rate Limit Service]
     F -->|Store State| G[Redis Cluster]
-```
-
-## Test Scenarios
-
-### 1. Basic Load Test
-
-```go
-// Basic load test configuration
-type Config struct {
-    URL         string        // Target URL
-    Duration    time.Duration // Test duration
-    Concurrency int          // Number of concurrent users
-    RPS         int          // Requests per second
-}
-
-// Example usage
-config := Config{
-    URL:         "http://gateway-url/users",
-    Duration:    5 * time.Minute,
-    Concurrency: 10,
-    RPS:         100,
-}
-```
-
-### 2. Rate Limit Test
-
-```go
-// Rate limit test configuration
-type RateLimitConfig struct {
-    Companies     []string      // List of company IDs
-    RequestsPerIP int          // IP-based limit
-    TokenDuration time.Duration // JWT token duration
-}
-
-// Example usage
-config := RateLimitConfig{
-    Companies:     []string{"company1", "company2", "company3"},
-    RequestsPerIP: 30,
-    TokenDuration: time.Minute,
-}
-```
-
-## Running Tests
-
-### 1. Basic Load Test
-
-```bash
-# Run basic load test
-go run loadtest/main.go \
-  --url http://$GATEWAY_URL/users \
-  --duration 5m \
-  --concurrency 10 \
-  --rps 100
-```
-
-### 2. Rate Limit Test
-
-```bash
-# Run rate limit test
-go run loadtest/main.go \
-  --url http://$GATEWAY_URL/users \
-  --duration 5m \
-  --companies company1,company2,company3 \
-  --ip-limit 30 \
-  --company-limit 100
-```
-
-### 3. Mixed Load Test
-
-```bash
-# Run mixed load test
-go run loadtest/main.go \
-  --url http://$GATEWAY_URL/users \
-  --duration 10m \
-  --scenario mixed \
-  --distribution "70,20,10" \
-  --jwt-enabled
 ```
 
 ## Test Configuration

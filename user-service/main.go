@@ -4,10 +4,9 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"time"
 
@@ -16,80 +15,44 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/reflection"
-	"google.golang.org/grpc/status"
-
-	"github.com/ramisback/istio-rate-limiter/user-service/internal/repository"
-	"github.com/ramisback/istio-rate-limiter/user-service/internal/service"
-	pb "github.com/ramisback/istio-rate-limiter/user-service/proto"
 )
 
 var (
-	// Prometheus metrics for monitoring user service operations
-	userOperations = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "user_operations_total",
-			Help: "Total number of user operations",
-		},
-		[]string{"operation", "status"},
-	)
-
-	authAttempts = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "auth_attempts_total",
-			Help: "Total number of authentication attempts",
-		},
-		[]string{"status"},
-	)
-
-	operationLatency = promauto.NewHistogramVec(
+	// Prometheus metrics
+	requestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "operation_latency_seconds",
-			Help:    "Operation latency in seconds",
+			Name:    "user_service_request_duration_seconds",
+			Help:    "Duration of user service requests in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"operation"},
+		[]string{"endpoint", "method", "status"},
 	)
 
-	activeSessions = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "active_sessions",
-			Help: "Number of active user sessions",
+	requestCounter = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "user_service_requests_total",
+			Help: "Total number of requests to user service",
 		},
-		[]string{"user_type"},
+		[]string{"endpoint", "method"},
 	)
 )
 
 // User represents a user account
 type User struct {
-	ID           string    // Unique user identifier
-	Username     string    // Username for login
-	Email        string    // User's email address
-	PasswordHash string    // Hashed password
-	Role         string    // User role (admin, user, etc.)
-	CreatedAt    time.Time // Account creation timestamp
-	LastLogin    time.Time // Last login timestamp
+	ID       string `json:"id"`
+	Email    string `json:"email"`
+	Password string `json:"-"` // Password is never sent in JSON responses
+	Role     string `json:"role"`
 }
 
 // UserService manages user accounts and authentication
 type UserService struct {
-	redis  *redis.Client // Redis client for session storage
-	logger *zap.Logger   // Structured logger
-	jwtKey []byte        // JWT signing key
-}
-
-// Session represents a user session
-type Session struct {
-	UserID    string    // Associated user ID
-	Token     string    // Session token
-	ExpiresAt time.Time // Session expiration time
+	redis  *redis.Client
+	jwtKey []byte
 }
 
 // NewUserService creates a new user service instance
-func NewUserService(logger *zap.Logger) (*UserService, error) {
+func NewUserService() (*UserService, error) {
 	// Initialize Redis client
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     "redis:6379",
@@ -105,227 +68,218 @@ func NewUserService(logger *zap.Logger) (*UserService, error) {
 	}
 
 	// Generate JWT key
-	jwtKey := make([]byte, 32)
-	if _, err := rand.Read(jwtKey); err != nil {
-		return nil, fmt.Errorf("failed to generate JWT key: %v", err)
-	}
+	jwtKey := []byte("your-secret-key") // In production, use a secure key
 
 	return &UserService{
 		redis:  redisClient,
-		logger: logger,
 		jwtKey: jwtKey,
 	}, nil
 }
 
-// CreateUser creates a new user account
-func (s *UserService) CreateUser(ctx context.Context, user *User) error {
-	start := time.Now()
-	defer func() {
-		operationLatency.WithLabelValues("create_user").Observe(time.Since(start).Seconds())
-	}()
+// loggingMiddleware logs all incoming requests
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 
-	// Validate user data
-	if err := s.validateUser(user); err != nil {
-		userOperations.WithLabelValues("create", "validation_error").Inc()
-		return status.Error(codes.InvalidArgument, err.Error())
+		// Create a custom response writer to capture the status code
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+		// Log the incoming request
+		log.Printf("Incoming request: %s %s", r.Method, r.URL.Path)
+
+		// Call the next handler
+		next.ServeHTTP(rw, r)
+
+		// Log the response
+		duration := time.Since(start).Seconds()
+		log.Printf("Request completed: %s %s - Status: %d - Duration: %.3fs",
+			r.Method, r.URL.Path, rw.statusCode, duration)
+
+		// Record metrics
+		requestDuration.WithLabelValues(r.URL.Path, r.Method, fmt.Sprintf("%d", rw.statusCode)).Observe(duration)
+		requestCounter.WithLabelValues(r.URL.Path, r.Method).Inc()
+	})
+}
+
+// responseWriter is a custom response writer that captures the status code
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (s *UserService) CreateUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
-	// Check if username exists
-	exists, err := s.redis.Exists(ctx, fmt.Sprintf("user:%s", user.Username)).Result()
-	if err != nil {
-		userOperations.WithLabelValues("create", "redis_error").Inc()
-		return status.Error(codes.Internal, "failed to check username")
-	}
-	if exists == 1 {
-		userOperations.WithLabelValues("create", "duplicate_username").Inc()
-		return status.Error(codes.AlreadyExists, "username already exists")
+	var user User
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
 	}
 
-	// Store user data
-	key := fmt.Sprintf("user:%s", user.Username)
-	if err := s.redis.HSet(ctx, key, map[string]interface{}{
-		"id":            user.ID,
-		"email":         user.Email,
-		"password_hash": user.PasswordHash,
-		"role":          user.Role,
-		"created_at":    user.CreatedAt.Unix(),
-		"last_login":    user.LastLogin.Unix(),
+	// Store user in Redis
+	userKey := fmt.Sprintf("user:%s", user.Email)
+	if err := s.redis.HSet(r.Context(), userKey, map[string]interface{}{
+		"id":       user.ID,
+		"email":    user.Email,
+		"password": user.Password,
+		"role":     user.Role,
 	}).Err(); err != nil {
-		userOperations.WithLabelValues("create", "redis_error").Inc()
-		return status.Error(codes.Internal, "failed to create user")
+		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		return
 	}
 
-	userOperations.WithLabelValues("create", "success").Inc()
-	return nil
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(user)
 }
 
-// AuthenticateUser authenticates a user and creates a session
-func (s *UserService) AuthenticateUser(ctx context.Context, username, password string) (*Session, error) {
-	start := time.Now()
-	defer func() {
-		operationLatency.WithLabelValues("authenticate").Observe(time.Since(start).Seconds())
-	}()
-
-	// Get user data
-	key := fmt.Sprintf("user:%s", username)
-	userData, err := s.redis.HGetAll(ctx, key).Result()
-	if err != nil {
-		authAttempts.WithLabelValues("redis_error").Inc()
-		return nil, status.Error(codes.Internal, "failed to get user data")
-	}
-	if len(userData) == 0 {
-		authAttempts.WithLabelValues("user_not_found").Inc()
-		return nil, status.Error(codes.NotFound, "user not found")
+func (s *UserService) Login(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
-	// Verify password
-	if !s.verifyPassword(password, userData["password_hash"]) {
-		authAttempts.WithLabelValues("invalid_password").Inc()
-		return nil, status.Error(codes.Unauthenticated, "invalid password")
+	var creds struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
-	// Create session
-	session := &Session{
-		UserID:    userData["id"],
-		Token:     s.generateToken(userData["id"], userData["role"]),
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
 	}
 
-	// Store session
-	sessionKey := fmt.Sprintf("session:%s", session.Token)
-	if err := s.redis.Set(ctx, sessionKey, session.UserID, 24*time.Hour).Err(); err != nil {
-		authAttempts.WithLabelValues("session_error").Inc()
-		return nil, status.Error(codes.Internal, "failed to create session")
+	// Get user from Redis
+	userKey := fmt.Sprintf("user:%s", creds.Email)
+	userData, err := s.redis.HGetAll(r.Context(), userKey).Result()
+	if err != nil || len(userData) == 0 {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
 	}
 
-	// Update last login
-	if err := s.redis.HSet(ctx, key, "last_login", time.Now().Unix()).Err(); err != nil {
-		s.logger.Error("failed to update last login",
-			zap.Error(err),
-			zap.String("username", username),
-		)
+	// Check password
+	if userData["password"] != creds.Password {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
 	}
 
-	authAttempts.WithLabelValues("success").Inc()
-	activeSessions.WithLabelValues(userData["role"]).Inc()
-	return session, nil
-}
-
-// validateUser validates user data
-func (s *UserService) validateUser(user *User) error {
-	if user.Username == "" {
-		return fmt.Errorf("username is required")
-	}
-	if user.Email == "" {
-		return fmt.Errorf("email is required")
-	}
-	if user.PasswordHash == "" {
-		return fmt.Errorf("password is required")
-	}
-	if user.Role == "" {
-		return fmt.Errorf("role is required")
-	}
-	return nil
-}
-
-// verifyPassword verifies a password against its hash
-func (s *UserService) verifyPassword(password, hash string) bool {
-	// Implement secure password verification
-	// This is a placeholder - use a proper password hashing library
-	return password == hash
-}
-
-// generateToken generates a JWT token for a user
-func (s *UserService) generateToken(userID, role string) string {
+	// Generate JWT token
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"user_id": userID,
-		"role":    role,
+		"user_id": userData["id"],
+		"role":    userData["role"],
 		"exp":     time.Now().Add(24 * time.Hour).Unix(),
 	})
 
 	tokenString, err := token.SignedString(s.jwtKey)
 	if err != nil {
-		s.logger.Error("failed to generate token",
-			zap.Error(err),
-			zap.String("user_id", userID),
-		)
-		return ""
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
 	}
 
-	return tokenString
+	json.NewEncoder(w).Encode(map[string]string{
+		"token": tokenString,
+	})
+}
+
+func (s *UserService) ValidateToken(tokenString string) (*jwt.Token, error) {
+	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return s.jwtKey, nil
+	})
+}
+
+// DummyService provides endpoints with different response times
+type DummyService struct{}
+
+func NewDummyService() *DummyService {
+	return &DummyService{}
+}
+
+// FastEndpoint responds quickly (10ms)
+func (s *DummyService) FastEndpoint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	time.Sleep(10 * time.Millisecond)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Fast response"})
+}
+
+// MediumEndpoint responds with medium latency (100ms)
+func (s *DummyService) MediumEndpoint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	time.Sleep(100 * time.Millisecond)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Medium response"})
+}
+
+// SlowEndpoint responds slowly (500ms)
+func (s *DummyService) SlowEndpoint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	time.Sleep(500 * time.Millisecond)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Slow response"})
+}
+
+// VerySlowEndpoint responds very slowly (1s)
+func (s *DummyService) VerySlowEndpoint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	time.Sleep(1 * time.Second)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Very slow response"})
 }
 
 func main() {
-	// Initialize structured logger
-	logger, err := zap.NewProduction()
+	userService, err := NewUserService()
 	if err != nil {
-		log.Fatalf("failed to create logger: %v", err)
-	}
-	defer func() {
-		if err := logger.Sync(); err != nil {
-			log.Printf("failed to sync logger: %v", err)
-		}
-	}()
-
-	// Initialize Redis client
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     "redis:6379",
-		Password: "", // Set if required
-		DB:       0,  // Use default DB
-	})
-
-	// Test Redis connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		logger.Fatal("failed to connect to Redis",
-			zap.Error(err),
-		)
+		log.Fatalf("Failed to create user service: %v", err)
 	}
 
-	// Create user repository
-	userRepo := repository.NewUserRepository(redisClient)
+	service := NewDummyService()
 
-	// Create user service
-	userSvc := service.NewUserService(logger, userRepo)
+	// Create a new mux router
+	mux := http.NewServeMux()
 
-	// Create gRPC server
-	grpcServer := grpc.NewServer()
+	// Register routes
+	mux.HandleFunc("/users", userService.CreateUser)
+	mux.HandleFunc("/login", userService.Login)
 
-	// Register user service
-	pb.RegisterUserServiceServer(grpcServer, service.NewGRPCServer(userSvc, logger))
+	// Register routes with different response times
+	mux.HandleFunc("/fast", service.FastEndpoint)          // 10ms
+	mux.HandleFunc("/medium", service.MediumEndpoint)      // 100ms
+	mux.HandleFunc("/slow", service.SlowEndpoint)          // 500ms
+	mux.HandleFunc("/very-slow", service.VerySlowEndpoint) // 1s
 
-	// Enable reflection for debugging
-	reflection.Register(grpcServer)
+	// Add Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.Handler())
 
-	// Initialize gRPC server
-	lis, err := net.Listen("tcp", ":8083")
-	if err != nil {
-		logger.Fatal("failed to listen",
-			zap.Error(err),
-			zap.String("address", ":8083"),
-		)
-	}
+	// Wrap the mux with our logging middleware
+	handler := loggingMiddleware(mux)
 
-	// Start Prometheus metrics endpoint
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		if err := http.ListenAndServe(":9092", nil); err != nil {
-			logger.Error("metrics server error",
-				zap.Error(err),
-			)
-		}
-	}()
+	log.Printf("User service starting on :8083")
+	log.Printf("Available endpoints:")
+	log.Printf("  GET /fast      - 10ms response time")
+	log.Printf("  GET /medium    - 100ms response time")
+	log.Printf("  GET /slow      - 500ms response time")
+	log.Printf("  GET /very-slow - 1s response time")
+	log.Printf("  GET /metrics   - Prometheus metrics")
 
-	// Log service startup
-	logger.Info("user service starting",
-		zap.String("address", ":8083"),
-	)
-
-	// Start gRPC server
-	if err := grpcServer.Serve(lis); err != nil {
-		logger.Fatal("failed to serve",
-			zap.Error(err),
-		)
+	if err := http.ListenAndServe(":8083", handler); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
 	}
 }

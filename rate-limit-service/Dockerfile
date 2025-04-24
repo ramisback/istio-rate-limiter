@@ -1,6 +1,6 @@
 # Build stage: Use golang:1.21-alpine as the base image for building the application
 # Alpine-based image for smaller size and better security
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24.2-alpine AS builder
 
 # Set the working directory inside the container
 WORKDIR /app

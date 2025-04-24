@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -17,7 +16,7 @@ import (
 
 const (
 	// Use environment variable for service URL with fallback
-	defaultBaseURL = "http://user-service.default.svc.cluster.local"
+	defaultBaseURL = "http://localhost:8083"
 )
 
 var (
@@ -26,7 +25,7 @@ var (
 			Name: "loadtest_requests_total",
 			Help: "Total number of requests made",
 		},
-		[]string{"status", "company"},
+		[]string{"status", "endpoint"},
 	)
 	requestLatency = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -34,7 +33,7 @@ var (
 			Help:    "Request latency distribution",
 			Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1},
 		},
-		[]string{"company"},
+		[]string{"endpoint"},
 	)
 )
 
@@ -42,18 +41,9 @@ type Config struct {
 	targetURL     string
 	rps           int
 	duration      time.Duration
-	numCompanies  int
-	jwtSecret     string
 	concurrency   int
 	enableMetrics bool
 	metricsPort   int
-}
-
-type Result struct {
-	Endpoint     string
-	StatusCode   int
-	ResponseTime time.Duration
-	Error        error
 }
 
 var baseURL string
@@ -81,6 +71,7 @@ func main() {
 		fmt.Println("1. The service is running (kubectl get pods -l app=user-service)")
 		fmt.Println("2. The service is accessible (kubectl get svc user-service)")
 		fmt.Println("3. You're running this from within the cluster or have proper port-forwarding")
+		fmt.Println("4. If running locally, ensure you're using the correct external IP or port-forward")
 		os.Exit(1)
 	}
 
@@ -90,16 +81,20 @@ func main() {
 func parseFlags() *Config {
 	config := &Config{}
 
-	flag.StringVar(&config.targetURL, "url", "http://localhost:8080", "Target URL")
+	flag.StringVar(&config.targetURL, "url", "", "Target URL (overrides SERVICE_URL env var)")
 	flag.IntVar(&config.rps, "rps", 100, "Requests per second")
 	flag.DurationVar(&config.duration, "duration", 5*time.Minute, "Test duration")
-	flag.IntVar(&config.numCompanies, "companies", 3, "Number of companies")
-	flag.StringVar(&config.jwtSecret, "jwt-secret", "secret", "JWT signing secret")
 	flag.IntVar(&config.concurrency, "concurrency", 10, "Number of concurrent workers")
 	flag.BoolVar(&config.enableMetrics, "metrics", true, "Enable Prometheus metrics")
 	flag.IntVar(&config.metricsPort, "metrics-port", 9090, "Metrics port")
 
 	flag.Parse()
+
+	// If URL is provided via flag, use it instead of env var
+	if config.targetURL != "" {
+		baseURL = config.targetURL
+	}
+
 	return config
 }
 
@@ -116,7 +111,7 @@ func testConnection() error {
 		Timeout: 5 * time.Second,
 	}
 
-	resp, err := client.Get(baseURL + "/health")
+	resp, err := client.Get(baseURL + "/metrics")
 	if err != nil {
 		return fmt.Errorf("failed to connect to service: %v", err)
 	}
@@ -173,30 +168,30 @@ func worker(config *Config, jobs <-chan int, wg *sync.WaitGroup) {
 		Timeout: 5 * time.Second,
 	}
 
+	// Define endpoints to test
+	endpoints := []string{"/fast", "/medium", "/slow", "/very-slow"}
+
 	for range jobs {
-		companyID := fmt.Sprintf("company%d", time.Now().UnixNano()%int64(config.numCompanies))
-		token := generateJWT(companyID, config.jwtSecret)
+		// Select a random endpoint
+		endpoint := endpoints[time.Now().UnixNano()%int64(len(endpoints))]
 
 		start := time.Now()
-		status := makeRequest(client, config.targetURL, companyID, token)
+		status := makeRequest(client, baseURL+endpoint)
 		duration := time.Since(start)
 
 		if config.enableMetrics {
-			requestsTotal.WithLabelValues(status, companyID).Inc()
-			requestLatency.WithLabelValues(companyID).Observe(duration.Seconds())
+			requestsTotal.WithLabelValues(status, endpoint).Inc()
+			requestLatency.WithLabelValues(endpoint).Observe(duration.Seconds())
 		}
 	}
 }
 
-func makeRequest(client *http.Client, url, companyID, token string) string {
+func makeRequest(client *http.Client, url string) string {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		log.Printf("Error creating request: %v", err)
 		return "error"
 	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Company-ID", companyID)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -206,20 +201,4 @@ func makeRequest(client *http.Client, url, companyID, token string) string {
 	defer resp.Body.Close()
 
 	return fmt.Sprintf("%d", resp.StatusCode)
-}
-
-func generateJWT(companyID, secret string) string {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":        companyID,
-		"company_id": companyID,
-		"exp":        time.Now().Add(time.Hour).Unix(),
-	})
-
-	tokenString, err := token.SignedString([]byte(secret))
-	if err != nil {
-		log.Printf("Error generating JWT: %v", err)
-		return ""
-	}
-
-	return tokenString
 }

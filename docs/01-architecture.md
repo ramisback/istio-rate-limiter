@@ -1,10 +1,139 @@
-# Architecture
+# Architecture Overview
 
-## System Overview
+## System Components
 
-The Istio Rate Limiter is built on a microservices architecture using Kubernetes and Istio service mesh. The system consists of several key components working together to provide robust rate limiting capabilities.
+The Istio Rate Limiter Demo consists of the following key components:
 
-### High-Level Architecture
+1. **Istio Gateway**
+   - Entry point for external traffic
+   - Configured to accept HTTP traffic on port 80
+   - Integrated with rate limiting and JWT authentication
+
+2. **User Service**
+   - Handles user management and authentication
+   - Exposes REST API endpoints
+   - Implements rate limiting based on user identity
+   - Uses Redis for session storage
+
+3. **Rate Limit Service**
+   - Implements rate limiting logic
+   - Uses Redis for rate limit storage
+   - Communicates with Istio via gRPC
+   - Supports multiple rate limiting strategies
+
+4. **Redis**
+   - Stores rate limit counters
+   - Manages user sessions
+   - Provides data persistence
+
+5. **Monitoring Stack**
+   - Prometheus for metrics collection
+   - Grafana for visualization
+   - Custom dashboards for rate limiting metrics
+
+## Data Flow
+
+1. **Request Flow**
+   ```
+   Client -> Istio Gateway -> Rate Limit Filter -> JWT Filter -> User Service
+   ```
+
+2. **Rate Limiting Flow**
+   ```
+   Request -> Rate Limit Filter -> Rate Limit Service -> Redis -> Response
+   ```
+
+3. **Authentication Flow**
+   ```
+   Request -> JWT Filter -> User Service -> Redis -> Response
+   ```
+
+## Rate Limiting Strategies
+
+1. **IP-based Rate Limiting**
+   - Limits requests based on client IP
+   - Configurable limits per IP address
+   - Redis-backed counter storage
+
+2. **User-based Rate Limiting**
+   - Limits requests based on user identity
+   - JWT token validation
+   - Different limits for different user tiers
+
+3. **Company-based Rate Limiting**
+   - Limits requests based on company ID
+   - JWT token validation
+   - Shared limits for company users
+
+## Monitoring and Metrics
+
+1. **Key Metrics**
+   - Request rates and latencies
+   - Rate limit hits and rejections
+   - Service health and errors
+   - Resource utilization
+
+2. **Dashboards**
+   - Rate limiting overview
+   - Service performance
+   - Error rates and types
+   - Resource usage
+
+## Configuration Management
+
+1. **Kubernetes Resources**
+   - Gateway configuration
+   - Virtual service routing
+   - Rate limit filters
+   - Service deployments
+
+2. **Environment Variables**
+   - Service configuration
+   - Rate limit settings
+   - Redis connection
+   - Monitoring setup
+
+## Security
+
+1. **Authentication**
+   - JWT token validation
+   - Secure session management
+   - Redis-backed session storage
+
+2. **Rate Limiting**
+   - Protection against DDoS
+   - Fair usage policies
+   - Configurable limits
+
+## Load Testing
+
+1. **Load Test Configuration**
+   - Configurable request rates
+   - Multiple concurrent workers
+   - Metrics collection
+   - Automatic gateway detection
+
+2. **Test Scenarios**
+   - Basic rate limiting
+   - Authentication flows
+   - Error handling
+   - Performance testing
+
+## Deployment
+
+1. **Kubernetes Deployment**
+   - Service mesh configuration
+   - Resource allocation
+   - Health checks
+   - Scaling policies
+
+2. **Monitoring Setup**
+   - Prometheus configuration
+   - Grafana dashboards
+   - Alert rules
+   - Log aggregation
+
+## High-Level Architecture
 
 ```mermaid
 graph TB

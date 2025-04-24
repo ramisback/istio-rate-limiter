@@ -1,33 +1,30 @@
-# Build stage: Use golang:1.21-alpine as the base image for building the application
-# Alpine-based image for smaller size and better security
-FROM golang:1.21-alpine AS builder
+# Build stage
+FROM golang:1.24.2-alpine AS builder
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy all source code and configuration files into the container
-COPY . .
+# Copy go mod and sum files
+COPY go.mod go.sum ./
 
-# Download all required Go dependencies
+# Download dependencies
 RUN go mod download
 
-# Build the application with CGO disabled for better compatibility
-# and target Linux as the operating system
-RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+# Copy source code
+COPY . .
 
-# Final stage: Use alpine:latest as the base image for running the application
-# This creates a minimal production image
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -o user-service
+
+# Final stage
 FROM alpine:latest
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy only the built binary from the builder stage
-# This reduces the final image size significantly
-COPY --from=builder /app/main .
+# Copy the binary from builder
+COPY --from=builder /app/user-service .
 
-# Expose port 8080 for the HTTP server
-EXPOSE 8080
+# Expose port
+EXPOSE 8083
 
-# Command to run the application
-CMD ["./main"] 
+# Run the application
+CMD ["./user-service"] 

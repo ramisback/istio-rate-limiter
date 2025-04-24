@@ -2,15 +2,15 @@ apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
   name: filter-ratelimit
-  namespace: default
+  namespace: istio-system
 spec:
   workloadSelector:
     labels:
-      app: user-service
+      istio: ingressgateway
   configPatches:
     - applyTo: CLUSTER
       match:
-        context: SIDECAR_OUTBOUND
+        context: GATEWAY
       patch:
         operation: ADD
         value:
@@ -30,7 +30,7 @@ spec:
                       port_value: 8081
     - applyTo: HTTP_FILTER
       match:
-        context: SIDECAR_INBOUND
+        context: GATEWAY
         listener:
           filterChain:
             filter:
@@ -43,7 +43,7 @@ spec:
           name: envoy.filters.http.ratelimit
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
-            domain: user-service
+            domain: istio-system
             failure_mode_deny: true
             rate_limit_service:
               grpc_service:
@@ -53,23 +53,40 @@ spec:
               transport_api_version: V3
     - applyTo: VIRTUAL_HOST
       match:
-        context: SIDECAR_INBOUND
+        context: GATEWAY
         routeConfiguration:
           vhost:
-            name: "inbound|http|80"
+            name: "*:80"
       patch:
         operation: MERGE
         value:
           rate_limits:
             - actions:
-              - source_cluster: {}
               - remote_address: {}
-              - destination_cluster: {}
               - request_headers:
-                  header_name: "x-forwarded-for"
-                  descriptor_key: "source_ip"
+                  header_name: ":path"
+                  descriptor_key: "path"
             - actions:
-              - source_cluster: {}
+              - remote_address: {}
               - request_headers:
-                  header_name: "x-company-id"
-                  descriptor_key: "company_id" 
+                  header_name: ":path"
+                  descriptor_key: "endpoint"
+                  descriptor_value: "fast"
+            - actions:
+              - remote_address: {}
+              - request_headers:
+                  header_name: ":path"
+                  descriptor_key: "endpoint"
+                  descriptor_value: "medium"
+            - actions:
+              - remote_address: {}
+              - request_headers:
+                  header_name: ":path"
+                  descriptor_key: "endpoint"
+                  descriptor_value: "slow"
+            - actions:
+              - remote_address: {}
+              - request_headers:
+                  header_name: ":path"
+                  descriptor_key: "endpoint"
+                  descriptor_value: "very-slow" 

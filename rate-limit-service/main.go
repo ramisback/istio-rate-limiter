@@ -10,6 +10,7 @@ import (
 	"net"      // For network operations
 	"net/http" // For HTTP server
 
+	// For string operations
 	// For environment variables
 	// For string conversions
 	"time" // For time operations
@@ -76,6 +77,15 @@ type CompanyLimits struct {
 	RequestsPerMinute int // Maximum number of requests allowed per minute
 }
 
+// RateLimitConfig defines rate limits for different types of requests
+type RateLimitConfig struct {
+	IPLimit      int64
+	PathLimit    int64
+	CompanyLimit int64
+	UserLimit    int64
+	Window       time.Duration
+}
+
 // RateLimitServer implements the Envoy rate limit service interface
 // and manages the rate limiting state and operations
 type RateLimitServer struct {
@@ -85,7 +95,9 @@ type RateLimitServer struct {
 	updateQueue  chan *envoy.RateLimitRequest // Channel for async updates
 	workerPool   *UpdateWorkerPool            // Pool of workers for processing updates
 	ipLimit      int64                        // Rate limit for IP-based limiting
+	pathLimit    int64                        // Rate limit for path-based limiting
 	companyLimit int64                        // Rate limit for company-based limiting
+	userLimit    int64                        // Rate limit for user-based limiting
 	window       time.Duration                // Time window for rate limiting
 	metrics      *prometheus.CounterVec       // Prometheus metrics
 	logger       *zap.Logger                  // Structured logger
@@ -172,14 +184,16 @@ func NewRateLimitServer() (*RateLimitServer, error) {
 	// Initialize worker pool for processing updates
 	pool := NewUpdateWorkerPool(10, rdb, logger)
 
-	// Create and configure rate limit server
+	// Create and configure rate limit server with updated limits
 	server := &RateLimitServer{
 		localCache:   cache,
 		redis:        rdb,
-		updateQueue:  make(chan *envoy.RateLimitRequest, 10000), // Buffer for 10k requests
+		updateQueue:  make(chan *envoy.RateLimitRequest, 10000),
 		workerPool:   pool,
-		ipLimit:      1000,        // 1000 requests per window
-		companyLimit: 10000,       // 10000 requests per window
+		ipLimit:      1000,        // 1000 requests per window per IP
+		pathLimit:    500,         // 500 requests per window per path
+		companyLimit: 10000,       // 10000 requests per window per company
+		userLimit:    100,         // 100 requests per window per user
 		window:       time.Minute, // 1-minute window
 		metrics:      rateLimitRequests,
 		logger:       logger,
@@ -342,58 +356,59 @@ func (s *RateLimitServer) ShouldRateLimit(ctx context.Context, req *envoy.RateLi
 	return response, nil
 }
 
-// checkRateLimit performs the actual rate limit check for a descriptor
-// and returns the current limit and remaining requests
+// checkRateLimit checks if a request should be rate limited based on its descriptors
 func (s *RateLimitServer) checkRateLimit(descriptor *ratelimit.RateLimitDescriptor) (int, int, error) {
-	// Extract rate limit key from descriptor
+	var limit int64
 	var key string
+
+	// Extract rate limit key and limit based on descriptor
 	for _, entry := range descriptor.Entries {
-		if entry.Key == "generic_key" {
-			key = entry.Value
-			break
+		switch entry.Key {
+		case "remote_address":
+			limit = s.ipLimit
+			key = fmt.Sprintf("ip:%s", entry.Value)
+		case "path":
+			limit = s.pathLimit
+			key = fmt.Sprintf("path:%s", entry.Value)
+		case "company_id":
+			limit = s.companyLimit
+			key = fmt.Sprintf("company:%s", entry.Value)
+		case "user_id":
+			limit = s.userLimit
+			key = fmt.Sprintf("user:%s", entry.Value)
 		}
 	}
 
 	if key == "" {
-		return 0, 0, nil
+		return 0, 0, fmt.Errorf("no valid rate limit key found in descriptor")
 	}
 
 	// Check local cache first
 	if val, found := s.localCache.Get(key); found {
-		count := val.(int)
-		if count >= int(s.ipLimit) {
-			return int(s.ipLimit), 0, nil
+		count := val.(int64)
+		if count >= limit {
+			return int(count), int(limit), nil
 		}
-		return int(s.ipLimit), int(s.ipLimit) - count, nil
 	}
 
-	// Check Redis if not in local cache
+	// Check Redis for distributed rate limiting
 	ctx := context.Background()
-	pipe := s.redis.Pipeline()
-
-	// Increment counter
-	incr := pipe.Incr(ctx, key)
-	// Set expiration if key is new
-	pipe.Expire(ctx, key, s.window)
-
-	// Execute pipeline
-	_, err := pipe.Exec(ctx)
+	count, err := s.redis.Incr(ctx, key).Result()
 	if err != nil {
-		redisErrors.WithLabelValues("increment").Inc()
-		return 0, 0, fmt.Errorf("failed to check rate limit: %v", err)
+		redisErrors.WithLabelValues("incr").Inc()
+		return 0, 0, fmt.Errorf("redis error: %v", err)
 	}
 
-	// Get current count
-	count := incr.Val()
+	// Set expiration if this is the first request
+	if count == 1 {
+		s.redis.Expire(ctx, key, s.window)
+	}
 
 	// Update local cache
-	s.localCache.Set(key, int(count), 1)
+	s.localCache.Set(key, count, 1)
 
-	if count > s.ipLimit {
-		return int(s.ipLimit), 0, nil
-	}
-
-	return int(s.ipLimit), int(s.ipLimit - count), nil
+	// Return current count and limit
+	return int(count), int(limit), nil
 }
 
 // main initializes and runs the rate limit service
